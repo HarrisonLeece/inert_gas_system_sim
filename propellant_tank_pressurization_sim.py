@@ -55,6 +55,12 @@ class GasSystem:
         self.pt2_propmass_list = []
         #initialize some lists for plotting non-tank parameters
         self.time_list = []
+        #initialize lists for plotting q_dot graphs
+        self.q_dot = []
+        self.m_dot = []
+        self.mach = []
+        self.gas_temp = []
+        self.flow_velocity = []
 
     def simulate(self):
         t=0
@@ -69,9 +75,6 @@ class GasSystem:
             #simple method pressures and temperatures
             self.st_pressure_list.append(self.supply_tank.p)
             self.st_temp_list.append(self.supply_tank.temp)
-            #deriv method pressures and temperatures
-            self.st_deriv_pressure_list.append(self.supply_tank.deriv_p)
-            self.st_deriv_temp_list.append(self.supply_tank.deriv_temp)
 
             self.pt1_mass_list.append(self.prop_tank1.gas_mass)
             self.pt1_pressure_list.append(self.prop_tank1.p)
@@ -101,12 +104,62 @@ class GasSystem:
             self.prop_tank1.update_ullage_mass_and_temp(mass_in1, exit_gas_temp)
             self.prop_tank2.update_ullage_mass_and_temp(mass_in2, exit_gas_temp)
 
+    def calc_sound_speed_metric(self, k, temp):
+        '''@author Harrison Leece
+        Converts english units to metric, computes speed of sound at
+        certain condtions, converts local speed of sound to feet/s
+
+        @return local speed of sound in metric units
+        '''
+        #universial gas constant R. 1544ft-lbf/lbm-mol-R or 8314.3 J/kg-mol-K
+        R_prime_metric = 8314.3
+        molar_mass = 1000*cp.PropsSI('M',self.supply_tank.flu)
+        R = R_prime_metric/molar_mass
+        #a_metric is in m/s
+        a_metric = np.sqrt(k * R * temp)
+        #return as m/s
+        return a_metric
+
+    def find_worst_mach(self):
+        '''
+        This is a kinda hacky method for calculating the maximum mass flow rate
+        '''
+        max_qdot=0
+        max_mdot=0
+        temp=0
+        max_mach = 0
+        max_velocity = 0
+        #area of the pipe section
+        #.25'' == .00635 meters
+        area=3.1415*(0.009398/2)**2
+        length = len(self.st_mass_list)
+        for i in range(1, (length-1)):
+            mdot =  abs((self.st_mass_list[i-1] - self.st_mass_list[i+1])/(2*self.step))
+            qdot = mdot / cp.PropsSI('D', 'P', self.prop_tank1.p_target, 'T', self.st_temp_list[i], self.supply_tank.flu)
+            velocity = qdot/area
+            c_p = cp.PropsSI('C', 'P', self.prop_tank1.p_target, 'T', self.st_temp_list[i], self.supply_tank.flu)
+            c_v = cp.PropsSI('O', 'P', self.prop_tank1.p_target, 'T', self.st_temp_list[i], self.supply_tank.flu)
+            gamma = c_p/c_v
+            ss = self.calc_sound_speed_metric(gamma,self.st_temp_list[i])
+            mach = velocity/ss
+            self.q_dot.append(qdot)
+            self.m_dot.append(mdot)
+            self.mach.append(mach)
+            self.gas_temp.append(-1 * self.st_temp_list[i])
+            self.flow_velocity.append(velocity)
+
+        print('Maximum mach number acheived: {} M'.format(max(self.mach)))
+        print('Gas Temperature at highest mach: {} degrees kelvin'.format(-1 * max(self.gas_temp)))
+        print('Max mass flow rate: {} kg/s'.format(max(self.m_dot)))
+        print('Highest velocity: {} m/s'.format(max(self.flow_velocity)))
+        print('Max Volumetric Flow Rate: {} m^3/s'.format(max(self.q_dot)))
+
+
     def plot_system(self):
         #supply tank plots
         plt.figure()
         plt.subplot(3, 1, 1)
         plt.plot(self.time_list, self.st_pressure_list)
-        plt.plot(self.time_list, self.st_deriv_pressure_list)
         plt.grid()
         plt.title('Pressure vs time')
         plt.ylabel('Pressure (Pa)')
@@ -115,7 +168,6 @@ class GasSystem:
         plt.title('Temperature vs Time')
         plt.ylabel('Temperature (Kelvin)')
         plt.plot(self.time_list, self.st_temp_list)
-        plt.plot(self.time_list, self.st_deriv_temp_list)
         plt.grid()
         plt.subplot(3, 1, 3)
         plt.title('Gas Mass vs Time')
@@ -138,15 +190,15 @@ class GasSystem:
         plt.plot(self.time_list, self.pt1_temp_list)
         plt.grid()
         plt.subplot(4, 1, 3)
-        plt.title('Ullage Temperature vs Time')
+        plt.title('Ullage Gas Mass vs Time')
         plt.ylabel('Mass (kg)')
-        plt.plot(self.time_list, self.pt2_mass_list)
+        plt.plot(self.time_list, self.pt1_mass_list)
         plt.grid()
         plt.subplot(4,1,4)
         plt.title('Prop Mass Remaining vs Time')
         plt.ylabel('Propellant mass (kg)')
         plt.xlabel('Time (s)')
-        plt.plot(self.time_list, self.pt2_propmass_list)
+        plt.plot(self.time_list, self.pt1_propmass_list)
         plt.grid()
 
         #propellant tank 2 plots
@@ -163,7 +215,7 @@ class GasSystem:
         plt.plot(self.time_list, self.pt2_temp_list)
         plt.grid()
         plt.subplot(4, 1, 3)
-        plt.title('Temperature vs Time')
+        plt.title('Ullage gas mass vs Time')
         plt.ylabel('Mass (kg)')
         plt.plot(self.time_list, self.pt2_mass_list)
         plt.grid()
@@ -280,7 +332,6 @@ class isochoricTank:
         #derivative of adiabatic expansion equation with respect to density
         #gamma must be the instantaneous gamma at the simulated time
         delta_p = pre_press / (pre_rho**gamma) * gamma * new_rho**(gamma-1)
-        print(new_rho)
         return delta_p
 
     def compute_temp_deriv(self, pre_temp, pre_rho, new_rho, gamma):
@@ -399,6 +450,7 @@ class propellantTank:
         self.prop_flow_rate = prop_mass_flow_rate
         #m^3/s of propellant required
         self.d_volume = prop_mass_flow_rate/prop_density
+        print('d_volume required for this tank: {} m^3/s'.format(self.d_volume))
         self.p_target = target_pressure
         self.p = target_pressure
         self.temp = t_i
@@ -499,11 +551,11 @@ if __name__ == "__main__":
     he_tank = isochoricTank(34470000,298,.03,"Helium")
     print("Helium initial mass", he_tank.m_i, 'kg')
 
-    lox_tank = propellantTank(3103000, 298, 127.79, ox_flow_rate, 1146, .003, "Helium")
-    jeta_tank = propellantTank(3103000, 298, 67.25, fuel_flow_rate, 819, .003, "Helium")
+    #lox_tank = propellantTank(3103000, 298, 127.79, ox_flow_rate, 1146, .003, "Helium")
+    #jeta_tank = propellantTank(3103000, 298, 67.25, fuel_flow_rate, 819, .003, "Helium")
 
-    he_tank.constant_mdot_test()
-    he_tank.plot_tank()
+    #he_tank.constant_mdot_test()
+    #he_tank.plot_tank()
 
     #print('Lox tank initial propellant mass: ', 127.79, 'kg')
     #print('Lox tank propellant mass flow rate: ', lox_tank.prop_flow_rate,'kg/s')
@@ -512,11 +564,15 @@ if __name__ == "__main__":
     #gas_system.simulate()
     #gas_system.plot_system()
 
-    lox_tank = propellantTank(3103000, 298, 127.79, ox_flow_rate, 1146, .003, "Helium")
-    jeta_tank = propellantTank(3103000, 298, 67.25, fuel_flow_rate, 819, .003, "Helium")
-    scuba_inert_tank = isochoricTank(15279000,298,.0464,"Helium")
+    lox_tank = propellantTank(3103000, 298, 127.79, ox_flow_rate, 1146, .003, "Nitrogen")
+    jeta_tank = propellantTank(3103000, 298, 67.25, fuel_flow_rate, 819, .003, "Nitrogen")
+    scuba_inert_tank = isochoricTank(22750000,298,.052,"Nitrogen")
     print("Inert gas initial mass", scuba_inert_tank.m_i, 'kg')
 
+    #scuba_inert_tank.constant_mdot_test()
+    #scuba_inert_tank.plot_tank()
+
     gas_system = GasSystem(lox_tank, jeta_tank, scuba_inert_tank, .005)
-    #gas_system.simulate()
-    #gas_system.plot_system()
+    gas_system.simulate()
+    gas_system.find_worst_mach()
+    gas_system.plot_system()
